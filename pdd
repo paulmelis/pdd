@@ -1,0 +1,359 @@
+#! /usr/bin/env python3
+# Like ldd, but better :)
+# XXX add ldd, for double-checking
+import sys, os, re, subprocess
+
+"""
+From the ld.so manpage:
+
+   When  resolving shared object dependencies, the dynamic linker first inspects each dependency string to see if it contains a
+   slash (this can occur if a shared object pathname containing slashes was specified at link time).  If a slash is found, then
+   the  dependency string is interpreted as a (relative or absolute) pathname, and the shared object is loaded using that path-
+   name.
+
+   If a shared object dependency does not contain a slash, then it is searched for in the following order:
+
+   o  Using the directories specified in the DT_RPATH dynamic section attribute of the binary if present and DT_RUNPATH  attri-
+      bute does not exist.  Use of DT_RPATH is deprecated.
+
+   o  Using  the environment variable LD_LIBRARY_PATH, unless the executable is being run in secure-execution mode (see below),
+      in which case this variable is ignored.
+
+   o  Using the directories specified in the DT_RUNPATH dynamic section attribute of the binary if present.   Such  directories
+      are searched only to find those objects required by DT_NEEDED (direct dependencies) entries and do not apply to those ob-
+      jects' children, which must themselves have their own DT_RUNPATH entries.  This is unlike DT_RPATH, which is  applied  to
+      searches for all children in the dependency tree.
+
+   o  From  the cache file /etc/ld.so.cache, which contains a compiled list of candidate shared objects previously found in the
+      augmented library path.  If, however, the binary was linked with the -z nodeflib linker option, shared objects in the de-
+      fault  paths are skipped.  Shared objects installed in hardware capability directories (see below) are preferred to other
+      shared objects.
+
+   o  In the default path /lib, and then /usr/lib.  (On some 64-bit architectures, the default paths for 64-bit shared  objects
+      are /lib64, and then /usr/lib64.)  If the binary was linked with the -z nodeflib linker option, this step is skipped.
+
+
+   Rpath token expansion
+
+   The  dynamic linker understands certain token strings in an rpath specification (DT_RPATH or DT_RUNPATH).  Those strings are
+   substituted as follows:
+
+   $ORIGIN (or equivalently ${ORIGIN})
+          This expands to the directory containing the program or shared object.  Thus, an application located  in  somedir/app
+          could be compiled with
+
+              gcc -Wl,-rpath,'$ORIGIN/../lib'
+
+          so that it finds an associated shared object in somedir/lib no matter where somedir is located in the directory hier-
+          archy.  This facilitates the creation of "turn-key" applications that do not need to be installed into special direc-
+          tories, but can instead be unpacked into any directory and still find their own shared objects.
+
+   $LIB (or equivalently ${LIB})
+          This  expands  to  lib or lib64 depending on the architecture (e.g., on x86-64, it expands to lib64 and on x86-32, it
+          expands to lib).
+
+   $PLATFORM (or equivalently ${PLATFORM})
+          This expands to a string corresponding to the processor type of the host system (e.g., "x86_64").  On some  architec-
+          tures,  the  Linux kernel doesn't provide a platform string to the dynamic linker.  The value of this string is taken
+          from the AT_PLATFORM value in the auxiliary vector (see getauxval(3)).
+
+
+snellius paulm@int5 11:12 ~$ objdump -p /sw/arch/RHEL8/EB_production/2023/software/CMake/3.26.3-GCCcore-12.3.0/bin/cmake
+
+/sw/arch/RHEL8/EB_production/2023/software/CMake/3.26.3-GCCcore-12.3.0/bin/cmake:     file format elf64-x86-64
+...
+
+Dynamic Section:
+  NEEDED               libcurl.so.4
+  NEEDED               libarchive.so.13
+  NEEDED               libz.so.1
+  NEEDED               libstdc++.so.6
+  NEEDED               libm.so.6
+  NEEDED               libgcc_s.so.1
+  NEEDED               libc.so.6
+  RPATH                /sw/arch/RHEL8/EB_production/2023/software/CMake/3.26.3-GCCcore-12.3.0/lib:/sw/arch/RHEL8/EB_production/2023/software/CMake/3.26.3-GCCcore-12.3.0/lib64:$ORIGIN:$ORIGIN/../lib:$ORIGIN/../lib64:/sw/arch/RHEL8/EB_production/2023/software/OpenSSL/3/lib64:/sw/arch/RHEL8/EB_production/2023/software/libarchive/3.6.2-GCCcore-12.3.0/lib64:/sw/arch/RHEL8/EB_production/2023/software/cURL/8.0.1-GCCcore-12.3.0/lib64:/sw/arch/RHEL8/EB_production/2023/software/bzip2/1.0.8-GCCcore-12.3.0/lib64:/sw/arch/RHEL8/EB_production/2023/software/zlib/1.2.13-GCCcore-12.3.0/lib64:/sw/arch/RHEL8/EB_production/2023/software/ncurses/6.4-GCCcore-12.3.0/lib64:/sw/arch/RHEL8/EB_production/2023/software/binutils/2.40-GCCcore-12.3.0/lib64:/sw/arch/RHEL8/EB_production/2023/software/GCCcore/12.3.0/lib64:/sw/arch/RHEL8/EB_production/2023/software/GCCcore/12.3.0/lib:/gpfs/admin/_hpc/sw/arch/AMD-ZEN2/RHEL8/EB_production/2023/software/GCCcore/12.3.0/bin/../lib/gcc/x86_64-pc-linux-gnu/12.3.0:/gpfs/admin/_hpc/sw/arch/AMD-ZEN2/RHEL8/EB_production/2023/software/GCCcore/12.3.0/bin/../lib/gcc:/sw/arch/RHEL8/EB_production/2023/software/XZ/5.4.2-GCCcore-12.3.0/lib/../lib64:/sw/arch/RHEL8/EB_production/2023/software/XZ/5.4.2-GCCcore-12.3.0/lib
+...
+
+From How To Write Shared Libraries, Ulrich Drepper, drepper@gmail.com, December 10, 2011
+https://software.intel.com/sites/default/files/m/a/1/e/dsohowto.pdf
+
+* The  first  is  that  an  empty  path represents the current working directory (CWD) of the process at runtime.
+
+
+# Dump /etc/ld.so.cache
+$ ldconfig -p
+1334 libs found in cache `/etc/ld.so.cache'
+        libzzipwrap-0.so.13 (libc6,x86-64) => /lib64/libzzipwrap-0.so.13
+        libzzipmmapped-0.so.13 (libc6,x86-64) => /lib64/libzzipmmapped-0.so.13
+        libzzipfseeko-0.so.13 (libc6,x86-64) => /lib64/libzzipfseeko-0.so.13
+        libzzip-0.so.13 (libc6,x86-64) => /lib64/libzzip-0.so.13
+        libzstd.so.1 (libc6,x86-64) => /lib64/libzstd.so.1
+        libzstd.so (libc6,x86-64) => /lib64/libzstd.so
+        libz.so.1 (libc6,x86-64) => /lib64/libz.so.1
+        libz.so (libc6,x86-64) => /lib64/libz.so
+        libyaml-0.so.2 (libc6,x86-64) => /lib64/libyaml-0.so.2
+        libyajl.so.2 (libc6,x86-64) => /lib64/libyajl.so.2
+        libxxhash.so.0 (libc6,x86-64) => /lib64/libxxhash.so.0
+        libxtables.so.12 (libc6,x86-64) => /lib64/libxtables.so.12
+        libxslt.so.1 (libc6,x86-64) => /lib64/libxslt.so.1
+        libxslt.so (libc6,x86-64) => /lib64/libxslt.so
+        libxshmfence.so.1 (libc6,x86-64) => /lib64/libxshmfence.so.1
+        libxpmem.so.0 (libc6,x86-64) => /lib64/libxpmem.so.0
+        libxml2.so.2 (libc6,x86-64) => /lib64/libxml2.so.2
+        libxml2.so (libc6,x86-64) => /lib64/libxml2.so
+        libxmlb.so.2 (libc6,x86-64) => /lib64/libxmlb.so.2
+"""
+
+def get_attributes(fname):
+    refs = dict(needed=[], rpath=[], runpath=[])
+
+    pat = re.compile(r'^\s+(NEEDED|RPATH|RUNPATH)\s+(.*)$')
+    res = subprocess.run(['objdump', '-p', fname], capture_output=True)
+    if res.returncode == 1:
+        sys.stdout.write(res.stderr.decode('utf8'))
+        return refs
+
+    stdout = res.stdout.decode('utf8')
+    for line in stdout.split('\n'):
+        m = pat.search(line)
+        if m is None:
+            continue
+        type = m.group(1).lower()
+        value = m.group(2)
+        if type != 'needed':
+            values = value.split(':')
+            refs[type].extend(values)
+        else:
+            refs[type].append(value)
+
+    rpath = refs['rpath'] if len(refs['rpath']) > 0 else None
+    runpath = refs['runpath'] if len(refs['runpath']) > 0 else None
+
+    return refs['needed'], rpath, runpath
+
+def ldd(fname):
+    """
+    snellius paulm@int5 11:19 ~$ ldd /sw/arch/RHEL8/EB_production/2023/software/CMake/3.26.3-GCCcore-12.3.0/bin/cmake
+    linux-vdso.so.1 (0x00007ffd81931000)
+    /sw/arch/xalt/lib64/libxalt_init.so (0x0000147e926b4000)
+    libcurl.so.4 => /sw/arch/RHEL8/EB_production/2023/software/cURL/8.0.1-GCCcore-12.3.0/lib64/libcurl.so.4 (0x0000147e92607000)
+    libarchive.so.13 => /sw/arch/RHEL8/EB_production/2023/software/libarchive/3.6.2-GCCcore-12.3.0/lib64/libarchive.so.13 (0x0000147e9251e000)
+    libz.so.1 => /sw/arch/RHEL8/EB_production/2023/software/zlib/1.2.13-GCCcore-12.3.0/lib64/libz.so.1 (0x0000147e924fa000)
+    libstdc++.so.6 => /sw/arch/RHEL8/EB_production/2023/software/GCCcore/12.3.0/lib64/libstdc++.so.6 (0x0000147e922d1000)
+    """
+    res = subprocess.run(['/bin/ldd', fname], capture_output=True)
+    if res.returncode == 1:
+        sys.stdout.write(res.stderr.decode('utf8'))
+        return None
+    stdout = res.stdout.decode('utf8')
+
+    res = {}
+    pat = re.compile(r'^\s+(.*) => (.*) ')
+
+    for line in stdout.split('\n'):
+        m = pat.search(line)
+        if m is None:
+            continue
+        res[m.group(1)] = m.group(2)
+
+    return res
+
+
+def resolve(level, target, parent_rpath=[], already_resolved=set()):
+
+    global ld_library_paths, default_paths, resolved_deps, ldd_resolves
+
+    origin = os.path.split(target)[0]
+    needed, rpath, runpath = get_attributes(target)
+
+    for dep in needed:
+
+        if dep in already_resolved:
+            continue
+
+        # Resolve needed dependency to actual file
+        resolved_dep = None
+        resolved_how = None
+
+        # RPATH (only if RUNPATH is not set)
+        if runpath is None:
+            # RPATH from parent
+            # XXX Not clear if this comes before or after current RPATH
+            if len(parent_rpath) > 0:
+                for path in parent_rpath:
+                    fullpath = os.path.join(path, dep).replace('$ORIGIN', origin)
+                    if os.path.isfile(fullpath):
+                        resolved_dep = fullpath
+                        resolved_how = 'Parent RPATH'
+                        break
+
+            if rpath is not None:
+                for path in rpath:
+                    fullpath = os.path.join(path, dep).replace('$ORIGIN', origin)
+                    if os.path.isfile(fullpath):
+                        resolved_dep = fullpath
+                        resolved_how = 'RPATH'
+                        break
+
+        # LD_LIBRARY_PATH
+        if resolved_dep is None:
+            for path in ld_library_paths:
+                fullpath = os.path.join(path, dep)
+                if os.path.isfile(fullpath):
+                    resolved_dep = fullpath
+                    resolved_how = 'LD_LIBRARY_PATH'
+                    break
+
+        # RUNPATH
+        if resolved_dep is None and runpath is not None:
+            for path in runpath:
+                fullpath = os.path.join(path, dep).replace('$ORIGIN', origin)
+                if os.path.isfile(fullpath):
+                    resolved_dep = fullpath
+                    resolved_how = 'RUNPATH'
+                    break
+
+        # Default paths
+        if resolved_dep is None:
+            for path in default_paths:
+                fullpath = os.path.join(path, dep)
+                if os.path.isfile(fullpath):
+                    resolved_dep = fullpath
+                    resolved_how = 'default'
+                    break
+
+        # Process the dependency
+        if resolved_dep:
+            sys.stdout.write('%s%s => %s [%s]' % (level*'    ', dep, resolved_dep, resolved_how))
+
+            if dep in ldd_resolves:
+                ldd_dep = ldd_resolves[dep]
+                if os.path.abspath(ldd_dep) != os.path.abspath(resolved_dep):
+                    sys.stdout.write('  >>> ldd says %s <<<' % ldd_dep)
+
+            real_resolved_dep = os.path.realpath(resolved_dep)
+            if real_resolved_dep != resolved_dep:
+                sys.stdout.write('\n')
+                sys.stdout.write((level*4+len(dep)+1)*' ')
+                sys.stdout.write('=> %s (real path)' % real_resolved_dep)
+
+            sys.stdout.write('\n')
+
+            resolved_deps.add(resolved_dep)
+            already_resolved.add(dep)
+
+            if rpath is not None:
+                child_rpath = parent_rpath + rpath
+            else:
+                child_rpath = parent_rpath
+
+            resolve(level+1, resolved_dep, child_rpath, already_resolved)
+        else:
+            print('%s%s => (not found)' % (level*'    ', dep))
+
+
+if 'LD_LIBRARY_PATH' in os.environ:
+    ld_library_paths = os.environ['LD_LIBRARY_PATH'].split(':')
+else:
+    ld_library_paths = []
+
+# Get default search paths
+default_paths = []
+p = subprocess.run(['/sbin/ldconfig', '-v', '-X', '-N'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+lines = p.stdout.decode('utf8').split('\n')
+# /usr/lib/x86_64-linux-gnu:
+pat = re.compile('^(/.+):$')
+for line in lines:
+    m = pat.search(line)
+    if m:
+        default_paths.append(m.group(1))
+default_paths.append('/lib64')
+default_paths.append('/usr/lib64')
+#print(default_paths)
+
+if len(sys.argv) == 1:
+    print('usage: %s file' % sys.argv[0])
+    print()
+    sys.exit(-1)
+
+target = os.path.abspath(sys.argv[1])
+
+# Run ldd, to cross-check our results
+ldd_resolves = ldd(target)
+
+if ldd_resolves is None:
+    print("Can't run ldd on %s" % target)
+    sys.exit(-1)
+
+# Process target
+
+print()
+print('%s' % target)
+print()
+
+# Relevant info from the file
+
+needed, rpath, runpath = get_attributes(target)
+
+if len(needed) > 0:
+    print('NEEDED entries (sorted):')
+    cols = 4
+    sys.stdout.write('    ')
+    for n in sorted(needed):
+        if cols+len(n) > 130:
+            sys.stdout.write('\n    ')
+            cols = 4
+        sys.stdout.write(n)
+        sys.stdout.write('  ')
+        cols += len(n) + 2
+    sys.stdout.write('\n')
+    print()
+
+if rpath is not None:
+    print('RPATH entries:')
+    for p in rpath:
+        sys.stdout.write('    ')
+        print(p)
+    print()
+
+if runpath is not None:
+    print('RUNPATH entries:')
+    for p in runpath:
+        sys.stdout.write('    ')
+        print(p)
+    print()
+
+# Resolve dependency tree manually (and check against ldd output)
+
+print('Dependencies:')
+
+resolved_deps = set()
+
+resolve(1, target)
+
+# Group resolved dependencies by location
+
+print()
+
+deps_by_location = {}
+
+for dep in resolved_deps:
+    location, fname = os.path.split(dep)
+    if location not in deps_by_location:
+        deps_by_location[location] = [fname]
+    else:
+        deps_by_location[location].append(fname)
+
+for location in sorted(deps_by_location.keys()):
+    print('%s:' % os.path.abspath(location))
+    sys.stdout.write('    ')
+    cols = 4
+    for fname in sorted(deps_by_location[location]):
+        if cols + len(fname) > 130:
+            sys.stdout.write('\n    ')
+            cols = 4
+        sys.stdout.write(fname)
+        sys.stdout.write('  ')
+        cols += len(fname) + 4
+    sys.stdout.write('\n')
+    print()
