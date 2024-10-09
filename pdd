@@ -1,6 +1,6 @@
 #! /usr/bin/env python3
 # Like ldd, but better :)
-# XXX add ldd, for double-checking
+# XXX include dirs from /etc/ld.so.conf?
 import sys, os, re, subprocess
 
 """
@@ -166,6 +166,12 @@ def resolve(level, target, parent_rpath=[], already_resolved=set()):
     origin = os.path.split(target)[0]
     needed, rpath, runpath = get_attributes(target)
 
+    # Expand $ORIGIN
+    if rpath:
+        rpath = [r.replace('$ORIGIN',origin) for r in rpath]
+    if runpath:
+        runpath = [r.replace('$ORIGIN',origin) for r in runpath]
+
     for dep in needed:
 
         if dep in already_resolved:
@@ -178,7 +184,6 @@ def resolve(level, target, parent_rpath=[], already_resolved=set()):
         # RPATH (only if RUNPATH is not set)
         if runpath is None:
             # RPATH from parent
-            # XXX Not clear if this comes before or after current RPATH
             if len(parent_rpath) > 0:
                 for path in parent_rpath:
                     fullpath = os.path.join(path, dep).replace('$ORIGIN', origin)
@@ -187,7 +192,7 @@ def resolve(level, target, parent_rpath=[], already_resolved=set()):
                         resolved_how = 'Parent RPATH'
                         break
 
-            if rpath is not None:
+            if resolved_dep is None and rpath is not None:
                 for path in rpath:
                     fullpath = os.path.join(path, dep).replace('$ORIGIN', origin)
                     if os.path.isfile(fullpath):
@@ -228,24 +233,23 @@ def resolve(level, target, parent_rpath=[], already_resolved=set()):
 
             if dep in ldd_resolves:
                 ldd_dep = ldd_resolves[dep]
-                if os.path.abspath(ldd_dep) != os.path.abspath(resolved_dep):
+                if os.path.realpath(ldd_dep) != os.path.realpath(resolved_dep):
                     sys.stdout.write('  >>> ldd says %s <<<' % ldd_dep)
 
             real_resolved_dep = os.path.realpath(resolved_dep)
             if real_resolved_dep != resolved_dep:
                 sys.stdout.write('\n')
                 sys.stdout.write((level*4+len(dep)+1)*' ')
-                sys.stdout.write('=> %s (real path)' % real_resolved_dep)
+                sys.stdout.write('   %s (real path)' % real_resolved_dep)
 
             sys.stdout.write('\n')
 
             resolved_deps.add(resolved_dep)
             already_resolved.add(dep)
 
+            child_rpath = parent_rpath
             if rpath is not None:
-                child_rpath = parent_rpath + rpath
-            else:
-                child_rpath = parent_rpath
+                child_rpath = child_rpath + rpath
 
             resolve(level+1, resolved_dep, child_rpath, already_resolved)
         else:
