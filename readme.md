@@ -142,8 +142,8 @@ Dependencies (files):
 This adds the following information:
 
 * `NEEDED` and `RPATH` entries in the file being queried
-* The dependencies of the file as a tree, so you can see clearly relate the final dependencies to how they where resolved
-* Symlinks used in dependency paths are resolved, with both forms shown. In the example above `ldd` resolves `libssl.so.3` to a path that is actually a symlink back to `/usr/lib64/libssl.so.3.0.7`, but this isn't immediately clear.
+* The dependencies of the file as a tree, so you can see clearly relate the final dependencies to how they where resolved (i.e. directly versus indirectly, and from where they came)
+* Symlinks used in dependency paths are resolved, with both values shown. In the example above `ldd` resolves `libssl.so.3` to a path that is actually a symlink back to `/usr/lib64/libssl.so.3.0.7`, but this isn't immediately clear.
 * The sets of resolved dependencies grouped by location. This makes it easier to spot dependencies not in the place where you expect them.
 
 ## Dependencies
