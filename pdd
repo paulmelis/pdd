@@ -357,3 +357,21 @@ for location in sorted(deps_by_location.keys()):
         cols += len(fname) + 4
     sys.stdout.write('\n')
     print()
+
+# All dependencies
+
+all_deps = sorted(map(lambda x: os.path.split(x)[-1], resolved_deps))
+
+print('Dependencies (files):')
+sys.stdout.write('    ')
+cols = 4
+for dep in all_deps:
+    if cols + len(fname) > 130:
+        sys.stdout.write('\n    ')
+        cols = 4
+    sys.stdout.write(dep)
+    sys.stdout.write('  ')
+    cols += len(fname) + 4
+sys.stdout.write('\n')
+print()
+
