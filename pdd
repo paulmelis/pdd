@@ -370,12 +370,12 @@ print('Dependencies (files):')
 sys.stdout.write('    ')
 cols = 4
 for dep in all_deps:
-    if cols + len(fname) > 130:
+    if cols + len(dep) > 130:
         sys.stdout.write('\n    ')
         cols = 4
     sys.stdout.write(dep)
     sys.stdout.write('  ')
-    cols += len(fname) + 4
+    cols += len(dep) + 2
 sys.stdout.write('\n')
 print()
 
